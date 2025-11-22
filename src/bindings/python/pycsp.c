@@ -8,6 +8,7 @@
 #include <csp/interfaces/csp_if_kiss.h>
 #include <csp/drivers/usart.h>
 #include <csp/drivers/can_socketcan.h>
+#include <csp/drivers/i2c_linux.h>
 #include <endian.h>
 
 #define SOCKET_CAPSULE     "csp_socket_t"
@@ -868,12 +869,32 @@ static PyObject * pycsp_can_socketcan_init(PyObject * self, PyObject * args) {
 		return PyErr_Error("csp_can_socketcan_open_and_add_interface()", res);
 	}
 
-	Py_RETURN_NONE;
+        Py_RETURN_NONE;
 }
 
+#if CSP_POSIX
+static PyObject * pycsp_i2c_linux_init(PyObject * self, PyObject * args) {
+        char * device;
+        unsigned char node_id;
+        unsigned char i2c_address;
+        const char * if_name = CSP_IF_I2C_DEFAULT_NAME;
+
+        if (!PyArg_ParseTuple(args, "sBB|s", &device, &node_id, &i2c_address, &if_name)) {
+                return NULL;
+        }
+
+        int res = csp_i2c_linux_open_and_add_interface(device, if_name, node_id, i2c_address, NULL);
+        if (res != CSP_ERR_NONE) {
+                return PyErr_Error("csp_i2c_linux_open_and_add_interface()", res);
+        }
+
+        Py_RETURN_NONE;
+}
+#endif
+
 static PyObject * pycsp_kiss_init(PyObject * self, PyObject * args) {
-	char * device;
-	uint32_t baudrate = 500000;
+        char * device;
+        uint32_t baudrate = 500000;
 	uint32_t mtu = 512;
 	uint16_t addr;
 	const char * if_name = CSP_IF_KISS_DEFAULT_NAME;
@@ -998,8 +1019,11 @@ static PyMethodDef methods[] = {
 #endif /* CSP_HAVE_LIBZMQ */
 	{"kiss_init", pycsp_kiss_init, METH_VARARGS, ""},
 
-	/* csp/drivers/can_socketcan.h */
-	{"can_socketcan_init", pycsp_can_socketcan_init, METH_VARARGS, ""},
+    /* csp/drivers/can_socketcan.h */
+    {"can_socketcan_init", pycsp_can_socketcan_init, METH_VARARGS, ""},
+#if CSP_POSIX
+    {"i2c_linux_init", pycsp_i2c_linux_init, METH_VARARGS, ""},
+#endif
 
 	/* helpers */
 	{"packet_get_length", pycsp_packet_get_length, METH_O, ""},
