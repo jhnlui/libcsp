@@ -6,6 +6,7 @@
 #include <csp/csp.h>
 #include <csp/drivers/usart.h>
 #include <csp/drivers/can_socketcan.h>
+#include <csp/drivers/i2c_linux.h>
 #include <csp/interfaces/csp_if_zmqhub.h>
 
 #include "csp_posix_helper.h"
@@ -20,6 +21,8 @@ static uint8_t server_address = 255;
 static bool test_mode = false;
 static unsigned int server_received = 0;
 static unsigned int run_duration_in_sec = 3;
+static const char * i2c_device = NULL;
+static uint8_t i2c_address = 0;
 
 /* Server task - handles requests from clients */
 static void * server(void * param) {
@@ -136,10 +139,14 @@ static void * client(void * param) {
 
 static void print_usage(void)
 {
-	csp_print("Usage:\n"
-			  " -v <version>     set protocol version\n"
-			  " -t               enable test mode\n"
-			  " -T <duration>    enable test mode with running time in seconds\n"
+        csp_print("Usage:\n"
+                          " -a <address>     set node address\n"
+                          " -r <address>     set server address (default: node address)\n"
+                          " -i <i2c-device>  set I2C device path (Linux)\n"
+                          " -b <i2c-addr>    set I2C 7-bit address used by this node (default: match node)\n"
+                          " -v <version>     set protocol version\n"
+                          " -t               enable test mode\n"
+                          " -T <duration>    enable test mode with running time in seconds\n"
 			  " -h               print help\n");
 }
 
@@ -148,7 +155,7 @@ int main(int argc, char * argv[]) {
 
     uint8_t address = 0;
     int opt;
-    while ((opt = getopt(argc, argv, "v:tT:h")) != -1) {
+    while ((opt = getopt(argc, argv, "a:r:i:b:v:tT:h")) != -1) {
         switch (opt) {
             case 'a':
                 address = atoi(optarg);
@@ -156,9 +163,15 @@ int main(int argc, char * argv[]) {
             case 'r':
                 server_address = atoi(optarg);
                 break;
-			case 'v':
-				csp_conf.version = atoi(optarg);
-				break;
+            case 'i':
+                i2c_device = optarg;
+                break;
+            case 'b':
+                i2c_address = (uint8_t) strtoul(optarg, NULL, 0);
+                break;
+                        case 'v':
+                                csp_conf.version = atoi(optarg);
+                                break;
             case 't':
                 test_mode = true;
                 break;
@@ -180,6 +193,7 @@ int main(int argc, char * argv[]) {
     csp_print("Initialising CSP");
 
     /* Init CSP */
+    csp_conf.address = address;
     csp_init();
 
     /* Start router */
@@ -187,8 +201,24 @@ int main(int argc, char * argv[]) {
 
     /* Add interface(s) */
     csp_iface_t * default_iface = NULL;
+    if (i2c_device) {
+#ifdef __linux__
+        uint8_t rx_addr = i2c_address ? i2c_address : address;
+        int error = csp_i2c_linux_open_and_add_interface(i2c_device, CSP_IF_I2C_DEFAULT_NAME, address, rx_addr, &default_iface);
+        if (error != CSP_ERR_NONE) {
+            csp_print("failed to add I2C interface [%s], error: %d\n", i2c_device, error);
+            exit(1);
+        }
+        default_iface->is_default = 1;
+#else
+        csp_print("I2C interface is only supported on Linux\n");
+        exit(1);
+#endif
+    }
     if (!default_iface) {
         /* no interfaces configured - run server and client in process, using loopback interface */
+        server_address = address;
+    } else if (server_address == 255) {
         server_address = address;
     }
 
