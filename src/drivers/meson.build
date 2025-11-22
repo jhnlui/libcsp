@@ -8,7 +8,8 @@ else
 endif
 
 if host_machine.system() == 'linux'
-	csp_sources += files(['eth/eth_linux.c'])
-	csp_sources += files(['usart/usart_linux.c'])
-	csp_sources += files(['usart/usart_kiss.c'])
+        csp_sources += files(['eth/eth_linux.c'])
+        csp_sources += files(['usart/usart_linux.c'])
+        csp_sources += files(['usart/usart_kiss.c'])
+        csp_sources += files(['i2c/i2c_linux.c'])
 endif

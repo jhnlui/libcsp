@@ -6,5 +6,6 @@ if(CHECK_FOUND)
     queue.c
     buffer.c
     hmac.c
+    i2c_linux.c
   )
 endif()
