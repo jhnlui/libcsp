@@ -7,6 +7,7 @@
 #include <csp/drivers/usart.h>
 #include <csp/drivers/can_socketcan.h>
 #include <csp/drivers/i2c_linux.h>
+#include <csp/interfaces/csp_if_lo.h>
 #include <csp/interfaces/csp_if_zmqhub.h>
 
 #include "csp_posix_helper.h"
@@ -193,7 +194,7 @@ int main(int argc, char * argv[]) {
     csp_print("Initialising CSP");
 
     /* Init CSP */
-    csp_conf.address = address;
+    csp_if_lo.addr = address;
     csp_init();
 
     /* Start router */
