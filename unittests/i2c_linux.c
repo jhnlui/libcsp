@@ -142,6 +142,7 @@ START_TEST(test_i2c_linux_stub_tx_writes_payload)
 
         memcpy(packet->frame_begin, payload, payload_len);
         packet->frame_length = payload_len;
+        packet->cfpid = I2C_STUB_ADDR;
 
         csp_i2c_interface_data_t * ifdata = iface->interface_data;
         rc = ifdata->tx_func(iface->driver_data, packet);
