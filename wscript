@@ -170,6 +170,9 @@ def configure(ctx):
         ctx.env.append_unique('FILES_CSP', ['src/drivers/usart/usart_kiss.c',
                                             'src/drivers/usart/usart_{0}.c'.format(ctx.options.with_driver_usart)])
 
+    if ctx.options.with_os == 'posix':
+        ctx.env.append_unique('FILES_CSP', ['src/drivers/i2c/i2c_linux.c'])
+
     # Add ZMQ
     if ctx.options.enable_if_zmqhub:
         ctx.check_cfg(package='libzmq', args='--cflags --libs', define_name='CSP_HAVE_LIBZMQ')
