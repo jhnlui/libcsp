@@ -4,6 +4,11 @@
 #include <fcntl.h>
 #include <linux/i2c.h>
 #include <linux/i2c-dev.h>
+#if defined(__has_include)
+#if __has_include(<i2c/smbus.h>)
+#include <i2c/smbus.h>
+#endif
+#endif
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -15,6 +20,54 @@
 #include <csp/csp.h>
 #include <csp/csp_debug.h>
 #include <csp/csp_id.h>
+
+#ifndef I2C_SMBUS_BLOCK_MAX
+#define I2C_SMBUS_BLOCK_MAX 32
+#endif
+
+#ifndef i2c_smbus_write_i2c_block_data
+static inline int i2c_smbus_access(int file, char read_write, uint8_t command, int size, union i2c_smbus_data * data) {
+        struct i2c_smbus_ioctl_data args = {
+                .read_write = read_write,
+                .command = command,
+                .size = size,
+                .data = data,
+        };
+
+        return ioctl(file, I2C_SMBUS, &args);
+}
+
+static inline int i2c_smbus_write_i2c_block_data(int file, uint8_t command, uint8_t length, const uint8_t * values) {
+        union i2c_smbus_data data;
+
+        if (length > I2C_SMBUS_BLOCK_MAX) {
+                length = I2C_SMBUS_BLOCK_MAX;
+        }
+
+        data.block[0] = length;
+        memcpy(&data.block[1], values, length);
+
+        return i2c_smbus_access(file, I2C_SMBUS_WRITE, command, I2C_SMBUS_I2C_BLOCK_DATA, &data);
+}
+
+static inline int i2c_smbus_read_i2c_block_data(int file, uint8_t command, uint8_t length, uint8_t * values) {
+        union i2c_smbus_data data;
+
+        if (length > I2C_SMBUS_BLOCK_MAX) {
+                length = I2C_SMBUS_BLOCK_MAX;
+        }
+
+        data.block[0] = length;
+
+        if (i2c_smbus_access(file, I2C_SMBUS_READ, command,
+                             (length == I2C_SMBUS_BLOCK_MAX) ? I2C_SMBUS_I2C_BLOCK_BROKEN : I2C_SMBUS_I2C_BLOCK_DATA, &data) < 0) {
+                return -1;
+        }
+
+        memcpy(values, &data.block[1], data.block[0]);
+        return data.block[0];
+}
+#endif
 
 /** Context for a Linux I2C interface. */
 typedef struct {
