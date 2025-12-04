@@ -7,6 +7,9 @@
 #include <csp/csp.h>
 #include <csp/drivers/usart.h>
 #include <csp/drivers/can_socketcan.h>
+#ifdef __linux__
+#include <csp/drivers/i2c_linux.h>
+#endif
 #include <csp/interfaces/csp_if_zmqhub.h>
 #include <csp/interfaces/csp_if_udp.h>
 
@@ -19,6 +22,7 @@
 
 /* Commandline options */
 static uint8_t server_address = 0;
+static uint8_t i2c_address = 0;
 
 /* Test mode, check that server & client can exchange packets */
 static bool test_mode = false;
@@ -26,11 +30,12 @@ static unsigned int server_received = 0;
 static unsigned int run_duration_in_sec = 3;
 
 enum DeviceType {
-	DEVICE_UNKNOWN,
-	DEVICE_CAN,
-	DEVICE_KISS,
-	DEVICE_ZMQ,
-	DEVICE_UDP,
+DEVICE_UNKNOWN,
+DEVICE_CAN,
+DEVICE_KISS,
+DEVICE_ZMQ,
+DEVICE_I2C,
+DEVICE_UDP,
 };
 
 #define __maybe_unused __attribute__((__unused__))
@@ -88,10 +93,14 @@ static void * server(void * param) {
 /* End of server task */
 
 static struct option long_options[] = {
-    {"kiss-device", required_argument, 0, 'k'},
+{"kiss-device", required_argument, 0, 'k'},
+#ifdef __linux__
+{"i2c-device", required_argument, 0, 'i'},
+{"i2c-address", required_argument, 0, 'b'},
+#endif
 #if (CSP_HAVE_LIBSOCKETCAN)
-	#define OPTION_c "c:"
-    {"can-device", required_argument, 0, 'c'},
+#define OPTION_c "c:"
+{"can-device", required_argument, 0, 'c'},
 #else
 	#define OPTION_c
 #endif
@@ -118,81 +127,96 @@ static struct option long_options[] = {
 };
 
 static void print_help(void) {
-    csp_print("Usage: csp_server [options]\n");
-	if (CSP_HAVE_LIBSOCKETCAN) {
-		csp_print(" -c <can-device>  set CAN device\n");
-	}
-	if (1) {
-		csp_print(" -k <kiss-device> set KISS device\n");
-	}
-	if (CSP_HAVE_LIBZMQ) {
-		csp_print(" -z <zmq-device>  set ZeroMQ device\n");
-	}
-	if (CSP_USE_RTABLE) {
-		csp_print(" -R <rtable>      set routing table\n");
-	}
-	csp_print(" -u <udp-address>  set UDP address\n");
-	if (1) {
-		csp_print(" -a <address>     set interface address\n"
-				  " -v <version>     set protocol version\n"
-				  " -t               enable test mode\n"
-				  " -T <dration>     enable test mode with running time in seconds\n"
-				  " -h               print help\n");
-	}
+        csp_print("Usage: csp_server [options]\n");
+        if (CSP_HAVE_LIBSOCKETCAN) {
+                csp_print(" -c <can-device>  set CAN device\n");
+        }
+#ifdef __linux__
+        csp_print(" -i <i2c-device>  set I2C device path\n");
+        csp_print(" -b <i2c-addr>    set I2C 7-bit address used by this node (default: match node)\n");
+#endif
+        csp_print(" -k <kiss-device> set KISS device\n");
+        if (CSP_HAVE_LIBZMQ) {
+                csp_print(" -z <zmq-device>  set ZeroMQ device\n");
+        }
+        if (CSP_USE_RTABLE) {
+                csp_print(" -R <rtable>      set routing table\n");
+        }
+        csp_print(" -u <udp-address>  set UDP address\n");
+        csp_print(" -a <address>     set interface address\n"
+                          " -v <version>     set protocol version\n"
+                          " -t               enable test mode\n"
+                          " -T <dration>     enable test mode with running time in seconds\n"
+                          " -h               print help\n");
 }
 
 static csp_iface_t * add_interface(enum DeviceType device_type, const char * device_name)
 {
-    csp_iface_t * default_iface = NULL;
+        csp_iface_t * default_iface = NULL;
 
-    if (device_type == DEVICE_KISS) {
-        csp_usart_conf_t conf = {
-			.device = device_name,
-            .baudrate = 115200, /* supported on all platforms */
-            .databits = 8,
-            .stopbits = 1,
-            .paritysetting = 0,
-		};
-        int error = csp_usart_open_and_add_kiss_interface(&conf, CSP_IF_KISS_DEFAULT_NAME, server_address, &default_iface);
-        if (error != CSP_ERR_NONE) {
-            csp_print("failed to add KISS interface [%s], error: %d\n", device_name, error);
-            exit(1);
+        if (device_type == DEVICE_KISS) {
+                csp_usart_conf_t conf = {
+                        .device = device_name,
+                        .baudrate = 115200, /* supported on all platforms */
+                        .databits = 8,
+                        .stopbits = 1,
+                        .paritysetting = 0,
+                };
+                int error = csp_usart_open_and_add_kiss_interface(&conf, CSP_IF_KISS_DEFAULT_NAME, server_address, &default_iface);
+                if (error != CSP_ERR_NONE) {
+                        csp_print("failed to add KISS interface [%s], error: %d\n", device_name, error);
+                        exit(1);
+                }
+                default_iface->is_default = 1;
         }
-        default_iface->is_default = 1;
-    }
 
-    if (CSP_HAVE_LIBSOCKETCAN && (device_type == DEVICE_CAN)) {
-        int error = csp_can_socketcan_open_and_add_interface(device_name, CSP_IF_CAN_DEFAULT_NAME, server_address, 1000000, true, &default_iface);
-        if (error != CSP_ERR_NONE) {
-            csp_print("failed to add CAN interface [%s], error: %d\n", device_name, error);
-            exit(1);
+        if (CSP_HAVE_LIBSOCKETCAN && (device_type == DEVICE_CAN)) {
+                int error = csp_can_socketcan_open_and_add_interface(device_name, CSP_IF_CAN_DEFAULT_NAME, server_address, 1000000, true, &default_iface);
+                if (error != CSP_ERR_NONE) {
+                        csp_print("failed to add CAN interface [%s], error: %d\n", device_name, error);
+                        exit(1);
+                }
+                default_iface->is_default = 1;
         }
-        default_iface->is_default = 1;
-    }
 
-    if (CSP_HAVE_LIBZMQ && (device_type == DEVICE_ZMQ)) {
-        int error = csp_zmqhub_init(server_address, device_name, 0, &default_iface);
-        if (error != CSP_ERR_NONE) {
-            csp_print("failed to add ZMQ interface [%s], error: %d\n", device_name, error);
-            exit(1);
+        if (device_type == DEVICE_I2C) {
+#ifdef __linux__
+                const uint8_t rx_addr = i2c_address ? i2c_address : server_address;
+                int error = csp_i2c_linux_open_and_add_interface(device_name, CSP_IF_I2C_DEFAULT_NAME, server_address, rx_addr, &default_iface);
+                if (error != CSP_ERR_NONE) {
+                        csp_print("failed to add I2C interface [%s], error: %d\n", device_name, error);
+                        exit(1);
+                }
+                default_iface->is_default = 1;
+#else
+                csp_print("I2C interface is only supported on Linux\n");
+                exit(1);
+#endif
         }
-        default_iface->is_default = 1;
-    }
 
-	if (device_type == DEVICE_UDP) {
-		default_iface = malloc(sizeof(csp_iface_t));
-		static csp_if_udp_conf_t udp_conf;
+        if (CSP_HAVE_LIBZMQ && (device_type == DEVICE_ZMQ)) {
+                int error = csp_zmqhub_init(server_address, device_name, 0, &default_iface);
+                if (error != CSP_ERR_NONE) {
+                        csp_print("failed to add ZMQ interface [%s], error: %d\n", device_name, error);
+                        exit(1);
+                }
+                default_iface->is_default = 1;
+        }
 
-		udp_conf.host = strdup(device_name);
-		udp_conf.lport = DEFAULT_UDP_LOCAL_PORT;
-		udp_conf.rport = DEFAULT_UDP_REMOTE_PORT;
+        if (device_type == DEVICE_UDP) {
+                default_iface = malloc(sizeof(csp_iface_t));
+                static csp_if_udp_conf_t udp_conf;
 
-		csp_if_udp_init(default_iface, &udp_conf);
-		default_iface->addr = server_address;
-		default_iface->is_default = 1;
-	}
+                udp_conf.host = strdup(device_name);
+                udp_conf.lport = DEFAULT_UDP_LOCAL_PORT;
+                udp_conf.rport = DEFAULT_UDP_REMOTE_PORT;
 
-	return default_iface;
+                csp_if_udp_init(default_iface, &udp_conf);
+                default_iface->addr = server_address;
+                default_iface->is_default = 1;
+        }
+
+        return default_iface;
 }
 
 /* main - initialization of CSP and start of server task */
@@ -204,51 +228,57 @@ int main(int argc, char * argv[]) {
 	csp_iface_t * default_iface;
     int opt;
 
-	while ((opt = getopt_long(argc, argv, OPTION_c OPTION_z OPTION_R "k:u:a:v:tT:h", long_options, NULL)) != -1) {
-        switch (opt) {
-            case 'c':
-				device_name = optarg;
-				device_type = DEVICE_CAN;
-                break;
-            case 'k':
-				device_name = optarg;
-				device_type = DEVICE_KISS;
-                break;
-            case 'z':
-				device_name = optarg;
-				device_type = DEVICE_ZMQ;
-				break;
-			case 'u':
-				device_name = optarg;
-				device_type = DEVICE_UDP;
-				break;
+        while ((opt = getopt_long(argc, argv, OPTION_c OPTION_z OPTION_R "k:i:b:u:a:v:tT:h", long_options, NULL)) != -1) {
+                switch (opt) {
+                case 'c':
+                        device_name = optarg;
+                        device_type = DEVICE_CAN;
+                        break;
+                case 'k':
+                        device_name = optarg;
+                        device_type = DEVICE_KISS;
+                        break;
+                case 'i':
+                        device_name = optarg;
+                        device_type = DEVICE_I2C;
+                        break;
+                case 'b':
+                        i2c_address = (uint8_t) strtoul(optarg, NULL, 0);
+                        break;
+                case 'z':
+                        device_name = optarg;
+                        device_type = DEVICE_ZMQ;
+                        break;
+                case 'u':
+                        device_name = optarg;
+                        device_type = DEVICE_UDP;
+                        break;
 #if (CSP_USE_RTABLE)
-            case 'R':
-                rtable = optarg;
-                break;
+                case 'R':
+                        rtable = optarg;
+                        break;
 #endif
-            case 'a':
-                server_address = atoi(optarg);
-                break;
-			case 'v':
-				csp_conf.version = atoi(optarg);
-				break;
-            case 't':
-                test_mode = true;
-                break;
-            case 'T':
-                test_mode = true;
-				run_duration_in_sec = atoi(optarg);
-                break;
-            case 'h':
-				print_help();
-				exit(EXIT_SUCCESS);
-            case '?':
-                // Invalid option or missing argument
-				print_help();
-                exit(EXIT_FAILURE);
+                case 'a':
+                        server_address = atoi(optarg);
+                        break;
+                case 'v':
+                        csp_conf.version = atoi(optarg);
+                        break;
+                case 't':
+                        test_mode = true;
+                        break;
+                case 'T':
+                        test_mode = true;
+                        run_duration_in_sec = atoi(optarg);
+                        break;
+                case 'h':
+                        print_help();
+                        exit(EXIT_SUCCESS);
+                case '?':
+                        print_help();
+                        exit(EXIT_FAILURE);
+                }
         }
-    }
 
 	// If more than one of the interfaces are set, print a message and exit
 	if (device_type == DEVICE_UNKNOWN) {

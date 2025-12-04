@@ -84,7 +84,11 @@ static void * i2c_linux_rx_thread(void * arg) {
                                 csp_buffer_free(packet);
                                 continue;
                         }
-                        csp_print("%s[%s]: read() failed, error: %s\n", __func__, ctx->name, strerror(errno));
+                        if (errno == EOPNOTSUPP) {
+                                csp_print("%s[%s]: read() failed (adapter reports no slave support); CSP requires a target-capable I2C adapter\n", __func__, ctx->name);
+                        } else {
+                                csp_print("%s[%s]: read() failed, error: %s\n", __func__, ctx->name, strerror(errno));
+                        }
                         csp_buffer_free(packet);
                         sleep(1);
                         continue;
@@ -129,6 +133,19 @@ int csp_i2c_linux_open_and_add_interface(const char * device, const char * ifnam
                 csp_print("%s[%s]: open() failed for %s, error: %s\n", __func__, ctx->name, device, strerror(errno));
                 i2c_linux_free(ctx);
                 return CSP_ERR_INVAL;
+        }
+
+        unsigned long funcs = 0;
+        if (ioctl(ctx->fd, I2C_FUNCS, &funcs) < 0) {
+                csp_print("%s[%s]: ioctl(I2C_FUNCS) failed, error: %s\n", __func__, ctx->name, strerror(errno));
+                i2c_linux_free(ctx);
+                return CSP_ERR_DRIVER;
+        }
+
+        if ((funcs & I2C_FUNC_SLAVE) == 0) {
+                csp_print("%s[%s]: adapter does not support slave/target mode required by CSP (missing I2C_FUNC_SLAVE)\n", __func__, ctx->name);
+                i2c_linux_free(ctx);
+                return CSP_ERR_DRIVER;
         }
 
         if (ioctl(ctx->fd, I2C_SLAVE, ctx->address) < 0) {
