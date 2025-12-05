@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <linux/i2c.h>
 #include <linux/i2c-dev.h>
+#include <i2c/smbus.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -16,12 +17,14 @@
 #include <csp/csp_debug.h>
 #include <csp/csp_id.h>
 
+
 /** Context for a Linux I2C interface. */
 typedef struct {
         char name[CSP_IFLIST_NAME_MAX + 1];
         csp_iface_t iface;
         csp_i2c_interface_data_t ifdata;
         pthread_t rx_thread;
+        pthread_mutex_t fd_lock;
         int fd;
         uint8_t address;
 } i2c_linux_ctx_t;
@@ -36,6 +39,7 @@ static void i2c_linux_free(i2c_linux_ctx_t * ctx) {
                 close(ctx->fd);
         }
 
+        pthread_mutex_destroy(&ctx->fd_lock);
         free(ctx);
 }
 
@@ -44,24 +48,40 @@ static int csp_i2c_linux_tx(void * driver_data, csp_packet_t * packet) {
 
         const uint8_t dest = packet->cfpid & 0x7F;
 
-        struct i2c_msg msg = {
-                .addr = dest,
-                .flags = 0,
-                .len = packet->frame_length,
-                .buf = packet->frame_begin,
-        };
+        if (packet->frame_length > I2C_SMBUS_BLOCK_MAX) {
+                csp_print("%s[%s]: packet too large for SMBus write (%u > %u)\n", __func__, ctx->name, packet->frame_length,
+                          I2C_SMBUS_BLOCK_MAX);
+                csp_buffer_free(packet);
+                return CSP_ERR_TX;
+        }
 
-        struct i2c_rdwr_ioctl_data ioctl_data = {
-                .msgs = &msg,
-                .nmsgs = 1,
-        };
+        if (pthread_mutex_lock(&ctx->fd_lock) != 0) {
+                csp_print("%s[%s]: failed to lock fd mutex\n", __func__, ctx->name);
+                csp_buffer_free(packet);
+                return CSP_ERR_TX;
+        }
 
-        if (ioctl(ctx->fd, I2C_RDWR, &ioctl_data) < 0) {
-                csp_print("%s[%s]: ioctl(I2C_RDWR) failed, error: %s\n", __func__, ctx->name, strerror(errno));
+        if (ioctl(ctx->fd, I2C_SLAVE, dest) < 0) {
+                csp_print("%s[%s]: ioctl(I2C_SLAVE) failed for address %u, error: %s\n", __func__, ctx->name, dest,
+                          strerror(errno));
+                pthread_mutex_unlock(&ctx->fd_lock);
+                csp_buffer_free(packet);
+                return CSP_ERR_TX;
+        }
+
+        const int res = i2c_smbus_write_i2c_block_data(ctx->fd, 0, packet->frame_length, packet->frame_begin);
+
+        pthread_mutex_unlock(&ctx->fd_lock);
+
+        if (res < 0) {
+                csp_print("%s[%s]: i2c_smbus_write_i2c_block_data() failed, error: %s\n", __func__, ctx->name,
+                          strerror(errno));
+                csp_buffer_free(packet);
                 return CSP_ERR_TX;
         }
 
         csp_buffer_free(packet);
+
         return CSP_ERR_NONE;
 }
 
@@ -78,13 +98,29 @@ static void * i2c_linux_rx_thread(void * arg) {
 
                 const int header_len = csp_id_setup_rx(packet);
                 const size_t buf_len = header_len + CSP_BUFFER_SIZE;
-                ssize_t received = read(ctx->fd, packet->frame_begin, buf_len);
+                const uint8_t max_rx = (buf_len > I2C_SMBUS_BLOCK_MAX) ? I2C_SMBUS_BLOCK_MAX : buf_len;
+
+                if (pthread_mutex_lock(&ctx->fd_lock) != 0) {
+                        csp_print("%s[%s]: failed to lock fd mutex\n", __func__, ctx->name);
+                        csp_buffer_free(packet);
+                        sleep(1);
+                        continue;
+                }
+
+                if (ioctl(ctx->fd, I2C_SLAVE, ctx->address) < 0) {
+                        csp_print("%s[%s]: ioctl(I2C_SLAVE) failed for address %u, error: %s\n", __func__, ctx->name, ctx->address, strerror(errno));
+                        pthread_mutex_unlock(&ctx->fd_lock);
+                        csp_buffer_free(packet);
+                        sleep(1);
+                        continue;
+                }
+
+                const int received = i2c_smbus_read_i2c_block_data(ctx->fd, 0, max_rx, packet->frame_begin);
+
+                pthread_mutex_unlock(&ctx->fd_lock);
+
                 if (received < 0) {
-                        if (errno == EAGAIN || errno == EINTR) {
-                                csp_buffer_free(packet);
-                                continue;
-                        }
-                        csp_print("%s[%s]: read() failed, error: %s\n", __func__, ctx->name, strerror(errno));
+                        csp_print("%s[%s]: i2c_smbus_read_i2c_block_data() failed, error: %s\n", __func__, ctx->name, strerror(errno));
                         csp_buffer_free(packet);
                         sleep(1);
                         continue;
@@ -116,6 +152,7 @@ int csp_i2c_linux_open_and_add_interface(const char * device, const char * ifnam
         }
         ctx->fd = -1;
         ctx->address = i2c_address & 0x7F;
+        pthread_mutex_init(&ctx->fd_lock, NULL);
 
         strncpy(ctx->name, ifname, sizeof(ctx->name) - 1);
         ctx->iface.name = ctx->name;
